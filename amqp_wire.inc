@@ -67,7 +67,7 @@ class AMQPWriter
             if($x<0)
                 $x = sprintf("%u", $x);
         }
-                
+
         $res = array();
         for($i=0;$i<$bytes;$i++)
         {
@@ -79,7 +79,7 @@ class AMQPWriter
             throw new Exception("Value too big!");
         return $res;
     }
-    
+
     private function flushbits()
     {
         if(count($this->bits))
@@ -122,10 +122,10 @@ class AMQPWriter
             $last = 0;
         else
             $last = array_pop($this->bits);
-        
+
         $last |= ($b << $shift);
         array_push($this->bits, $last);
-            
+
         $this->bitcount += 1;
     }
 
@@ -282,14 +282,14 @@ class AMQPReader
         $this->bitcount = $this->bits = 0;
         return $this->rawread($n);
     }
-    
+
     private function rawread($n)
     {
         if($this->sock)
         {
             $res = '';
             $read = 0;
-            
+
             while ($read < $n && (false !== ($buf = fread($this->sock, $n - $read))))
             {
                 $read += strlen($buf);
@@ -361,7 +361,7 @@ class AMQPReader
             return $res;
         }
     }
-    
+
     // PHP does not have unsigned 32 bit int,
     // so we return it as a string
     public function read_long()
@@ -393,7 +393,7 @@ class AMQPReader
         // workaround signed/unsigned braindamage in php
         $hi = sprintf ( "%u", $hi );
         $lo = sprintf ( "%u", $lo );
- 
+
         return bcadd(bcmul($hi, "4294967296" ), $lo);
     }
 
@@ -407,7 +407,7 @@ class AMQPReader
         list(,$slen) = unpack('C', $this->rawread(1));
         return $this->rawread($slen);
     }
-    
+
     /**
      * Read a string that's up to 2**32 bytes, the encoding
      * isn't specified in the AMQP spec, so just return it as
@@ -421,7 +421,7 @@ class AMQPReader
             throw new Exception("Strings longer than supported on this platform");
         return $this->rawread($slen);
     }
-    
+
     /**
      * Read and AMQP timestamp, which is a 64-bit integer representing
      * seconds since the Unix epoch in 1-second resolution.
@@ -471,12 +471,12 @@ class AMQPReader
         return $result;
     }
 
-    
+
     protected function tell()
     {
         return $this->offset;
     }
-    
+
 }
 
 
@@ -513,11 +513,11 @@ class GenericContent
     {
         if(array_key_exists($name,$this->properties))
             return $this->properties[$name];
-        
+
         if(is_set($this->delivery_info))
             if(array_key_exists($name,$this->delivery_info))
                 return $this->delivery_info[$name];
-        
+
         throw new Exception("No such property");
     }
 
@@ -584,7 +584,7 @@ class GenericContent
                     $flag_bits = 0;
                     $shift = 15;
                 }
-                
+
                 $flag_bits |= (1 << $shift);
                 if($proptype != "bit")
                     call_user_func(array($raw_bytes, "write_" + proptype),
@@ -597,7 +597,7 @@ class GenericContent
         foreach($flags as $flag_bits)
             $result->write_short($flag_bits);
         $result->write($raw_bytes->getvalue());
-        
+
         return $result->getvalue();
     }
 }
