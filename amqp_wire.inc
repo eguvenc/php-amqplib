@@ -44,14 +44,15 @@ class AMQPDecimal
 
 class AMQPWriter
 {
-    public function __construct()
+    public function __construct($sock=NULL)
     {
+        $this->sock = $sock;
         $this->out = "";
         $this->bits = array();
         $this->bitcount = 0;
     }
 
-    private static function chrbytesplit($x, $bytes)
+    public static function chrbytesplit($x, $bytes)
     {
         return array_map('chr', AMQPWriter::bytesplit($x,$bytes));
     }
@@ -91,6 +92,37 @@ class AMQPWriter
     }
 
     /**
+     * Flush out the socket, if we're connected to one
+     */
+    public function flush()
+    {
+        $this->flushbits();
+
+        $data= $this->out;
+
+        debug_msg('< [hex]:' . hexdump($data, $htmloutout=false, $uppercase=true, $return=true));
+
+        $len = strlen($data);
+        while(true)
+        {
+            if(false == ($written = fwrite($this->sock, $data)))
+            {
+                throw new Exception ("Error sending data");
+            }
+            $len = $len - $written;
+            if($len>0)
+                $data=substr($data,0-$len);
+            else
+                break;
+        }
+
+        // Reset everything
+        $this->out = "";
+        $this->bits = array();
+        $this->bitcount = 0;
+    }
+
+    /**
      * Get what's been encoded so far.
      */
     public function getvalue()
@@ -127,6 +159,17 @@ class AMQPWriter
         array_push($this->bits, $last);
 
         $this->bitcount += 1;
+    }
+
+    /**
+     * Write out an AMQP frame.
+     */
+    public function write_frame($frame_type, $channel, $payload)
+    {
+        $this->out .= pack('CnN', $frame_type, $channel, strlen($payload));
+        $this->out .= $payload;
+        $this->out .= "\xce";
+        $this->flush();
     }
 
     /**

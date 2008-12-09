@@ -7,6 +7,7 @@
    *
    */
 
+require_once('amqp_framing.inc');
 require_once('amqp_wire.inc');
 require_once('hexdump.inc');
 
@@ -166,9 +167,12 @@ class AbstractChannel
         return $this->connection->wait_channel($this->channel_id);
     }
 
-    protected function send_method_frame($method_sig, $args="")
+    protected function send_method($method_sig, $args='', $msg=NULL)
     {
-        $this->connection->send_channel_method_frame($this->channel_id, $method_sig, $args);
+        if(is_a($args, "AMQPWriter"))
+            $args = $args->getvalue();
+
+        $this->connection->method_writer->write_method($this->channel_id, $method_sig, $args, $msg);
     }
 
     function wait_content()
@@ -338,9 +342,13 @@ class AMQPConnection extends AbstractChannel
             if (!($this->sock = fsockopen($host,$port,$errno,$errstr)))
                 throw new Exception ("Error Connecting to server($errno): $errstr ");
             stream_set_blocking($this->sock, 1);
+            $this->out = new AMQPWriter($this->sock);
             $this->input = new AMQPReader(null, $this->sock);
 
-            $this->write(AMQPConnection::$AMQP_PROTOCOL_HEADER);
+            $this->method_writer = new MethodWriter($this->out, $this->frame_max);
+
+            $this->out->write(AMQPConnection::$AMQP_PROTOCOL_HEADER);
+            $this->out->flush();
             $this->wait(array("10,10"));
             $this->x_start_ok($d, $login_method, $login_response, $locale);
 
@@ -376,23 +384,6 @@ class AMQPConnection extends AbstractChannel
         }
     }
 
-    protected function write($data)
-    {
-        $len = strlen($data);
-        while(true)
-        {
-            if(false == ($written = fwrite($this->sock, $data)))
-            {
-                throw new Exception ("Error sending data");
-            }
-            $len = $len - $written;
-            if($len>0)
-                $data=substr($data,0-$len);
-            else
-                break;
-        }
-    }
-
     protected function do_close()
     {
         if(isset($this->input))
@@ -416,67 +407,6 @@ class AMQPConnection extends AbstractChannel
             if(!array_key_exists($i,$this->channels))
                 return $i;
         throw new Exception("No free channel ids");
-    }
-
-    public function send_content($channel, $class_id, $weight, $body_size,
-                        $packed_properties, $body)
-    {
-        $pkt = new AMQPWriter();
-
-        $pkt->write_octet(2);
-        $pkt->write_short($channel);
-        $pkt->write_long(strlen($packed_properties)+12);
-
-        $pkt->write_short($class_id);
-        $pkt->write_short($weight);
-        $pkt->write_longlong($body_size);
-        $pkt->write($packed_properties);
-
-        $pkt->write_octet(0xCE);
-        $pkt = $pkt->getvalue();
-        $this->write($pkt);
-
-        while($body)
-        {
-            $payload = substr($body,0, $this->frame_max-8);
-            $body = substr($body,$this->frame_max-8);
-            $pkt = new AMQPWriter();
-
-            $pkt->write_octet(3);
-            $pkt->write_short($channel);
-            $pkt->write_long(strlen($payload));
-
-            $pkt->write($payload);
-
-            $pkt->write_octet(0xCE);
-            $pkt = $pkt->getvalue();
-            $this->write($pkt);
-        }
-    }
-
-    protected function send_channel_method_frame($channel, $method_sig, $args="")
-    {
-        if(is_a($args, "AMQPWriter"))
-            $args = $args->getvalue();
-
-        $pkt = new AMQPWriter();
-
-        $pkt->write_octet(1);
-        $pkt->write_short($channel);
-        $pkt->write_long(strlen($args)+4);  // 4 = length of class_id and method_id
-        // in payload
-
-        $pkt->write_short($method_sig[0]); // class_id
-        $pkt->write_short($method_sig[1]); // method_id
-        $pkt->write($args);
-
-        $pkt->write_octet(0xCE);
-        $pkt = $pkt->getvalue();
-        $this->write($pkt);
-
-        global $METHOD_NAME_MAP;
-        debug_msg("< " . methodSig($method_sig) . ": " . $METHOD_NAME_MAP[methodSig($method_sig)]);
-        debug_msg("< [hex]:\n" . hexdump($pkt, $htmloutput = false, $uppercase = true, $return = true));
     }
 
     /**
@@ -543,7 +473,7 @@ class AMQPConnection extends AbstractChannel
         $args->write_shortstr($reply_text);
         $args->write_short($method_sig[0]); // class_id
         $args->write_short($method_sig[1]); // method_id
-        $this->send_method_frame(array(10, 60), $args);
+        $this->send_method(array(10, 60), $args);
         return $this->wait(array(
                                "10,61",    // Connection.close_ok
                            ));
@@ -591,7 +521,7 @@ class AMQPConnection extends AbstractChannel
      */
     protected function x_close_ok()
     {
-        $this->send_method_frame(array(10, 61));
+        $this->send_method(array(10, 61));
         $this->do_close();
     }
 
@@ -609,7 +539,7 @@ class AMQPConnection extends AbstractChannel
         $args->write_shortstr($virtual_host);
         $args->write_shortstr($capabilities);
         $args->write_bit($insist);
-        $this->send_method_frame(array(10, 40), $args);
+        $this->send_method(array(10, 40), $args);
         return $this->wait(array(
                                "10,41", // Connection.open_ok
                                "10,50"  // Connection.redirect
@@ -654,7 +584,7 @@ class AMQPConnection extends AbstractChannel
     {
         $args = new AMQPWriter();
         $args->write_longstr($response);
-        $this->send_method_frame(array(10, 21), $args);
+        $this->send_method(array(10, 21), $args);
     }
 
     /**
@@ -684,7 +614,7 @@ class AMQPConnection extends AbstractChannel
         $args->write_shortstr($mechanism);
         $args->write_longstr($response);
         $args->write_shortstr($locale);
-        $this->send_method_frame(array(10, 11), $args);
+        $this->send_method(array(10, 11), $args);
     }
 
     /**
@@ -712,7 +642,7 @@ class AMQPConnection extends AbstractChannel
         $args->write_short($channel_max);
         $args->write_long($frame_max);
         $args->write_short($heartbeat);
-        $this->send_method_frame(array(10, 31), $args);
+        $this->send_method(array(10, 31), $args);
         $this->wait_tune_ok = False;
     }
 
@@ -814,7 +744,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_shortstr($reply_text);
         $args->write_short($method_sig[0]); // class_id
         $args->write_short($method_sig[1]); // method_id
-        $this->send_method_frame(array(20, 40), $args);
+        $this->send_method(array(20, 40), $args);
         return $this->wait(array(
                                "20,41"    // Channel.close_ok
                            ));
@@ -828,7 +758,7 @@ class AMQPChannel extends AbstractChannel
         $class_id   = $args->read_short();
         $method_id  = $args->read_short();
 
-        $this->send_method_frame(array(20, 41));
+        $this->send_method(array(20, 41));
         $this->do_close();
 
         throw new AMQPChannelException($reply_code, $reply_text,
@@ -850,7 +780,7 @@ class AMQPChannel extends AbstractChannel
     {
         $args = new AMQPWriter();
         $args->write_bit($active);
-        $this->send_method_frame(array(20, 20), $args);
+        $this->send_method(array(20, 20), $args);
         return $this->wait(array(
                                "20,21"    //Channel.flow_ok
                            ));
@@ -866,7 +796,7 @@ class AMQPChannel extends AbstractChannel
     {
         $args = new AMQPWriter();
         $args->write_bit($active);
-        $this->send_method_frame(array(20, 21), $args);
+        $this->send_method(array(20, 21), $args);
     }
 
     protected function flow_ok($args)
@@ -881,7 +811,7 @@ class AMQPChannel extends AbstractChannel
 
         $args = new AMQPWriter();
         $args->write_shortstr($out_of_band);
-        $this->send_method_frame(array(20, 10), $args);
+        $this->send_method(array(20, 10), $args);
         return $this->wait(array(
                                "20,11"    //Channel.open_ok
                            ));
@@ -906,7 +836,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_bit($active);
         $args->write_bit($write);
         $args->write_bit($read);
-        $this->send_method_frame(array(30, 10), $args);
+        $this->send_method(array(30, 10), $args);
         return $this->wait(array(
                                "30,11"    //Channel.access_request_ok
                            ));
@@ -951,7 +881,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_bit($internal);
         $args->write_bit($nowait);
         $args->write_table($arguments);
-        $this->send_method_frame(array(40, 10), $args);
+        $this->send_method(array(40, 10), $args);
 
         if(!$nowait)
             return $this->wait(array(
@@ -980,7 +910,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_shortstr($exchange);
         $args->write_bit($if_unused);
         $args->write_bit($nowait);
-        $this->send_method_frame(array(40, 20), $args);
+        $this->send_method(array(40, 20), $args);
 
         if(!$nowait)
             return $this->wait(array(
@@ -1015,7 +945,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_shortstr($routing_key);
         $args->write_bit($nowait);
         $args->write_table($arguments);
-        $this->send_method_frame(array(50, 20), $args);
+        $this->send_method(array(50, 20), $args);
 
         if(!$nowait)
             return $this->wait(array(
@@ -1057,7 +987,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_bit($auto_delete);
         $args->write_bit($nowait);
         $args->write_table($arguments);
-        $this->send_method_frame(array(50, 10), $args);
+        $this->send_method(array(50, 10), $args);
 
         if(!$nowait)
             return $this->wait(array(
@@ -1093,7 +1023,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_bit($if_unused);
         $args->write_bit($if_empty);
         $args->write_bit($nowait);
-        $this->send_method_frame(array(50, 40), $args);
+        $this->send_method(array(50, 40), $args);
 
         if(!$nowait)
             return $this->wait(array(
@@ -1121,7 +1051,7 @@ class AMQPChannel extends AbstractChannel
             $args->write_short($this->default_ticket);
         $args->write_shortstr($queue);
         $args->write_bit($nowait);
-        $this->send_method_frame(array(50, 30), $args);
+        $this->send_method(array(50, 30), $args);
 
         if(!$nowait)
             return $this->wait(array(
@@ -1145,7 +1075,7 @@ class AMQPChannel extends AbstractChannel
         $args = new AMQPWriter();
         $args->write_longlong($delivery_tag);
         $args->write_bit($multiple);
-        $this->send_method_frame(array(60, 80), $args);
+        $this->send_method(array(60, 80), $args);
     }
 
     /**
@@ -1156,7 +1086,7 @@ class AMQPChannel extends AbstractChannel
         $args = new AMQPWriter();
         $args->write_shortstr($consumer_tag);
         $args->write_bit($nowait);
-        $this->send_method_frame(array(60, 30), $args);
+        $this->send_method(array(60, 30), $args);
         return $this->wait(array(
                                "60,31"    // Channel.basic_cancel_ok
                            ));
@@ -1189,7 +1119,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_bit($no_ack);
         $args->write_bit($exclusive);
         $args->write_bit($nowait);
-        $this->send_method_frame(array(60, 20), $args);
+        $this->send_method(array(60, 20), $args);
 
         if(!$nowait)
             $consumer_tag = $this->wait(array(
@@ -1249,7 +1179,7 @@ class AMQPChannel extends AbstractChannel
             $args->write_short($this->default_ticket);
         $args->write_shortstr($queue);
         $args->write_bit($no_ack);
-        $this->send_method_frame(array(60, 70), $args);
+        $this->send_method(array(60, 70), $args);
         return $this->wait(array(
                                "60,71",    //Channel.basic_get_ok
                                "60,72"     // Channel.basic_get_empty
@@ -1301,12 +1231,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_shortstr($routing_key);
         $args->write_bit($mandatory);
         $args->write_bit($immediate);
-        $this->send_method_frame(array(60, 40), $args);
-
-        $this->connection->send_content($this->channel_id, 60, 0,
-                                        strlen($msg->body),
-                                        $msg->serialize_properties(),
-                                        $msg->body);
+        $this->send_method(array(60, 40), $args, $msg);
     }
 
 
@@ -1319,7 +1244,7 @@ class AMQPChannel extends AbstractChannel
         $args->write_long($prefetch_size);
         $args->write_short($prefetch_count);
         $args->write_bit($a_global);
-        $this->send_method_frame(array(60, 10), $args);
+        $this->send_method(array(60, 10), $args);
         return $this->wait(array(
                                "60,11"    //Channel.basic_qos_ok
                            ));
@@ -1340,7 +1265,7 @@ class AMQPChannel extends AbstractChannel
     {
         $args = new AMQPWriter();
         $args->write_bit($requeue);
-        $this->send_method_frame(array(60, 100), $args);
+        $this->send_method(array(60, 100), $args);
     }
 
     /**
@@ -1351,7 +1276,7 @@ class AMQPChannel extends AbstractChannel
         $args = new AMQPWriter();
         $args->write_longlong($delivery_tag);
         $args->write_bit($requeue);
-        $this->send_method_frame(array(60, 90), $args);
+        $this->send_method(array(60, 90), $args);
     }
 
     /**
@@ -1379,7 +1304,7 @@ class AMQPChannel extends AbstractChannel
      */
     public function tx_rollback()
     {
-        $this->send_method_frame(array(90, 30));
+        $this->send_method(array(90, 30));
         return $this->wait(array(
                                "90,31"    //Channel.tx_rollback_ok
                            ));
@@ -1397,7 +1322,7 @@ class AMQPChannel extends AbstractChannel
      */
     public function tx_select()
     {
-        $this->send_method_frame(array(90, 10));
+        $this->send_method(array(90, 10));
         return $this->wait(array(
                                "90,11"    //Channel.tx_select_ok
                            ));
