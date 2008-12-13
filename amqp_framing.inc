@@ -8,6 +8,8 @@
    *
    */
 
+require_once('amqp_exceptions.inc');
+
 class MethodWriter
 {
     public function __construct($dest, $frame_max)

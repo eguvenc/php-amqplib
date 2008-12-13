@@ -1,0 +1,47 @@
+<?php
+  /**
+   * Simple AMQP client library for AMQP for protocol version 0.8
+   *
+   * http://code.google.com/p/php-amqplib/
+   * Vadim Zaliva <lord@crocodile.org>
+   *
+   */
+
+require_once('amqp_wire.inc');
+
+/**
+ * A Message for use with the Channnel.basic_* methods.
+ */
+class AMQPMessage extends GenericContent
+{
+    protected static $PROPERTIES = array(
+        "content_type" => "shortstr",
+        "content_encoding" => "shortstr",
+        "application_headers" => "table",
+        "delivery_mode" => "octet",
+        "priority" => "octet",
+        "correlation_id" => "shortstr",
+        "reply_to" => "shortstr",
+        "expiration" => "shortstr",
+        "message_id" => "shortstr",
+        "timestamp" => "timestamp",
+        "type" => "shortstr",
+        "user_id" => "shortstr",
+        "app_id" => "shortstr",
+        "cluster_id" => "shortst"
+    );
+
+    public function __construct($body="", $children=NULL)
+    {
+        $this->body = $body;
+
+        $args = func_get_args();
+        unset($args['body']);
+        if(array_key_exists('children', $args))
+            unset($args['children']);
+
+        parent::__construct($args, $prop_types=AMQPMessage::$PROPERTIES);
+    }
+}
+
+?>
