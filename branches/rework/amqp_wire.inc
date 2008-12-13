@@ -15,6 +15,16 @@
 
 require_once('hexdump.inc');
 
+
+function methodSig($a)
+{
+    if(is_string($a))
+        return $a;
+    else
+        return sprintf("%d,%d",$a[0] ,$a[1]);
+}
+
+
   /**
    * AMQP protocol decimal value.
    *
