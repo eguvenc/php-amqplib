@@ -378,6 +378,22 @@ class AMQPReader
         return $result;
     }
 
+    public function read_frame()
+    {
+        $frame_type = $this->read_octet();
+        $channel = $this->read_short();
+        $size = $this->read_long();
+        $payload = $this->read($size);
+
+        debug_msg("> frame_type: $frame_type, channel: $channel, size: $size,  payload[hex]:\n" . hexdump($payload, $htmloutout=false, $uppercase=true, $return=true));
+
+        $ch = $this->read_octet();
+        if ($ch == 0xce)
+            return array($frame_type, $channel, $payload);
+        else
+            throw new Exception("Framing Error, received $ch while expecting 0xce");
+    }
+
     public function read_octet()
     {
         $this->bitcount = $this->bits = 0;
@@ -552,7 +568,7 @@ class GenericContent
         $d = array();
         if ($props)
             $d = array_intersect_key($props, $this->prop_types);
-        else    
+        else
             $d = array();
         $this->properties = $d;
     }
