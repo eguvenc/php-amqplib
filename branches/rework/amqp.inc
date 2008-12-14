@@ -70,6 +70,7 @@ class AMQPConnection extends AbstractChannel
             $this->out = new AMQPWriter($this->sock);
             $this->input = new AMQPReader(null, $this->sock);
 
+            $this->method_reader = new MethodReader($this->input);
             $this->method_writer = new MethodWriter($this->out, $this->frame_max);
 
             $this->out->write(AMQPConnection::$AMQP_PROTOCOL_HEADER);
@@ -134,47 +135,72 @@ class AMQPConnection extends AbstractChannel
         throw new Exception("No free channel ids");
     }
 
-    /**
-     * Wait for a frame from the server
+
+    /*
+     * Wait for a method from the server destined for
+     * a particular channel
      */
-    protected function wait_frame()
+    protected function wait_method($channel_id, $allowed_methods)
     {
-        $frame_type = $this->input->read_octet();
-        $channel = $this->input->read_short();
-        $size = $this->input->read_long();
-        $payload = $this->input->read($size);
+        //
+        // Check the channel's deferred methods
+        //
+        $method_queue = $this->channels[$channel_id]->method_queue;
 
-        $ch = $this->input->read_octet();
-        if($ch != 0xCE)
-            throw new Exception(sprintf("Framing error, unexpected byte: %x", $ch));
-
-        return array($frame_type, $channel, $payload);
-    }
-
-    /**
-     * Wait for a frame from the server destined for
-     * a particular channel.
-     */
-    protected function wait_channel($channel_id)
-    {
-        while(true)
+        foreach($method_queue as $qk=>$queued_method)
         {
-            list($frame_type, $frame_channel, $payload) = $this->wait_frame();
-            if($frame_channel == $channel_id)
-                return array($frame_type, $payload);
+            debug_msg("checking queue method " . $qk);
+            $method_sig = $queued_method[0];
+            if($allowed_methods==NULL || in_array($method_sig, $allowed_methods))
+            {
+                unset($method_queue[$qk]);
+                debug_msg("Executing queued method: $method_sig: " .
+                          $METHOD_NAME_MAP[methodSig($method_sig)]);
+                return $queued_method;
+            }
+        }
 
-            // Not the channel we were looking for.  Queue this frame
-            //for later, when the other channel is looking for frames.
-            array_push($this->channels[$frame_channel]->frame_queue,
-                       array($frame_type, $payload));
+        //
+        // Nothing queued, need to wait for a method from the peer
+        //
+        while (true)
+        {
+            $a = $this->method_reader->read_method();
+            // FIXME: trying to do python-style tuple unpacking here, not
+            // sure what the PHP equivalent is.
+            $channel = $a[0];
+            $method_sig = $a[1];
+            $args = $a[2];
+            $content = $a[3];
 
+            if (($channel == $channel_id)
+            and ($allowed_methods==NULL || in_array($method_sig, $allowed_methods)))
+            {
+                return array($method_sig, $args, $content);
+            }
+
+            //
+            // Not the channel and/or method we were looking for.  Queue
+            // this method for later
+            //
+            global $METHOD_NAME_MAP;
+            debug_msg("Queueing on channel $channel for later: $method_sig: " .
+                $METHOD_NAME_MAP[methodSig($method_sig)]);
+            array_push($this->channels[$channel]->method_queue,
+                array($method_sig, $args, $content));
+
+            //
             // If we just queued up a method for channel 0 (the Connection
             // itself) it's probably a close method in reaction to some
             // error, so deal with it right away.
-            if(($frame_type == 1) && ($frame_channel == 0))
+            //
+            if (channel == 0)
+            {
                 $this->wait();
+            }
         }
     }
+
 
     /**
      * Fetch a Channel object identified by the numeric channel_id, or
